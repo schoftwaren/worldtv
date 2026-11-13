@@ -6,3 +6,6 @@ build-android-arm64/
 
 # itch upload zips/builds never belong in git
 itch/builds/
+
+# itch kit: store assets + listing drafts + build artifacts, local-only
+itch/
