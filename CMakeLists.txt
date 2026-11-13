@@ -102,7 +102,7 @@ if(ANDROID)
     list(JOIN WEXTRA ";" WEXTRA_JOINED)
     set_target_properties(worldtv PROPERTIES
         QT_ANDROID_EXTRA_LIBS "${WEXTRA_JOINED}"
-        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/app/android"
     )
 endif()
 
