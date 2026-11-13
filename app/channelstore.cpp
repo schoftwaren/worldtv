@@ -21,7 +21,7 @@ namespace {
 constexpr auto kApiChannels =
     "https://iptv-org.github.io/api/channels.json"_L1;
 constexpr auto kApiStreams = "https://iptv-org.github.io/api/streams.json"_L1;
-constexpr auto kCatalogRes = "qrc:/worldtv/catalog.json"_L1;
+constexpr auto kCatalogRes = ":/worldtv/catalog.json"_L1;
 
 int qualityRank(const QString &q)
 {
