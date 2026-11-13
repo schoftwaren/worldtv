@@ -27,7 +27,7 @@ jobs:
 
       - name: Install Qt 6.10.1 (aqtinstall; runner apt Qt is too old)
         run: |
-          pip3 install aqtinstall
+          pip3 install --break-system-packages aqtinstall
           python3 -m aqt install-qt linux desktop 6.10.1 linux_gcc_64 --outputdir ~/Qt
           # archive layout is .../gcc_64 regardless of the aqt arch name
           QTDIR=$(echo "$HOME"/Qt/6.10.1/*/ | head -1)
@@ -194,8 +194,9 @@ jobs:
 
   macos:
     name: macOS build, test, dmg (Apple Silicon)
-    # macos-14 is REJECTED on the free plan (job cancelled before any step,
-    # annotation "configuration ... not supported"); macos-latest works.
+    # The pinned "macos-14" label is REJECTED on the free plan (job
+    # cancelled before any step, annotation "configuration ... not
+    # supported"); macos-latest works.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
