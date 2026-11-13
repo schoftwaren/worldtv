@@ -205,7 +205,7 @@ jobs:
 
       - name: Install Qt 6.10.1 (aqtinstall; brew Qt lags)
         run: |
-          pip3 install aqtinstall
+          pip3 install --break-system-packages aqtinstall
           python3 -m aqt install-qt mac desktop 6.10.1 clang_64 --outputdir ~/Qt
           QTDIR=$(echo "$HOME"/Qt/6.10.1/*/ | head -1)
           echo "QTDIR=$QTDIR" >> "$GITHUB_ENV"
