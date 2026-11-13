@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=worldtv
+Comment=World TV - live channels on the couch, keyboard + gamepad
+Exec=worldtv
+Icon=worldtv
+Categories=AudioVideo;Video;Player;TV;
+Terminal=false

@@ -10,7 +10,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(Qt6 6.9 REQUIRED COMPONENTS Quick QuickControls2 Gui Qml Network Test)
-find_package(SDL2 REQUIRED)
+# SDL2 is desktop-only (Android: no SDL in the NDK, gamepad stubbed)
+if(NOT ANDROID)
+    find_package(SDL2 REQUIRED)
+endif()
 
 add_subdirectory(third_party/mpvqt)
 
@@ -37,8 +40,10 @@ target_link_libraries(worldtv PRIVATE
     Qt6::Qml
     Qt6::Gui
     Qt6::Network
-    SDL2::SDL2
 )
+if(NOT ANDROID)
+    target_link_libraries(worldtv PRIVATE SDL2::SDL2)
+endif()
 
 # ---- embedded catalog resource -------------------------------------------
 qt_add_resources(worldtv "catalog"
@@ -68,3 +73,67 @@ target_link_libraries(appcore PUBLIC Qt6::Gui Qt6::Network)
 target_compile_definitions(appcore PUBLIC
     APP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app"
 )
+
+# ---- Android: package libmpv + its ffmpeg deps into the APK -------------
+# Same two-layer silent-exit root cause viddeck hit (2026-10-01): the app
+# lib NEEDs libmpv.so, which NEEDs libav*/libsw*/libc++_shared; none are
+# packaged by default. libc++_shared is swapped post-build for the
+# mpv-android prebuilt copy (cmake/swap_libcpp.sh) - NDK 27's libc++
+# lacks the __ndk1 symbols this libmpv bundles.
+if(ANDROID)
+    if(NOT MPV_LIBRARY)
+        message(FATAL_ERROR
+            "Android build needs -DMPV_LIBRARY=<arm64-v8a/libmpv.so>")
+    endif()
+    get_filename_component(MPV_LIB_DIR "${MPV_LIBRARY}" DIRECTORY)
+    set(WEXTRA
+        "${MPV_LIB_DIR}/libmpv.so"
+        "${MPV_LIB_DIR}/libavcodec.so"
+        "${MPV_LIB_DIR}/libavdevice.so"
+        "${MPV_LIB_DIR}/libavfilter.so"
+        "${MPV_LIB_DIR}/libavformat.so"
+        "${MPV_LIB_DIR}/libavutil.so"
+        "${MPV_LIB_DIR}/libswresample.so"
+        "${MPV_LIB_DIR}/libswscale.so"
+    )
+    list(JOIN WEXTRA ";" WEXTRA_JOINED)
+    set_target_properties(worldtv PROPERTIES
+        QT_ANDROID_EXTRA_LIBS "${WEXTRA_JOINED}"
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+    )
+endif()
+
+# ---- Embedded QML: portable binaries must carry their UI ----------------
+# Desktop dev keeps the source-tree load (APP_SOURCE_DIR); Android and
+# WORLDTV_EMBED_QML=ON release builds embed Main.qml at /worldtv/ and
+# load qrc:/worldtv/Main.qml (main.cpp dual-candidates). AppImage rule:
+# the entry QML rides in the EXECUTABLE's own qrc - a module-lib qrc is
+# NOT visible to the packaged binary (viddeck 5-round lesson).
+set(WEMBED_QML OFF)
+if(ANDROID OR WORLDTV_EMBED_QML)
+    set(WEMBED_QML ON)
+endif()
+if(WEMBED_QML)
+    set_property(SOURCE app/Main.qml PROPERTY
+        QT_RESOURCE_ALIAS Main.qml)
+    qt_add_resources(worldtv "worldtv_qml"
+        PREFIX "/worldtv"
+        FILES app/Main.qml)
+    # mpv TLS on Android/ffmpeg: no system CA store exists there; the
+    # vendored mpvcontroller extracts this and sets mpv tls-ca-file.
+    set(WTV_CA_FILE ${CMAKE_CURRENT_SOURCE_DIR}/res/ca-bundle.crt)
+    set_property(SOURCE ${WTV_CA_FILE} PROPERTY QT_RESOURCE_ALIAS ca-bundle.crt)
+    qt_add_resources(worldtv "worldtv_ca"
+        PREFIX "/ca"
+        FILES ${WTV_CA_FILE})
+    target_compile_definitions(worldtv PRIVATE WORLDTV_QML_EMBEDDED)
+endif()
+
+# SDL2 is a desktop-only couch input; Android ships no SDL (touch covers
+# it). The stub keeps gamepad.h's ABI so main.cpp links unchanged.
+if(ANDROID)
+    target_sources(worldtv PRIVATE app/gamepad_stub.cpp)
+    target_compile_definitions(worldtv PRIVATE WORLDTV_NO_SDL=1)
+    set_property(SOURCE app/gamepad.cpp PROPERTY HEADER_FILE_ONLY ON)
+endif()
+

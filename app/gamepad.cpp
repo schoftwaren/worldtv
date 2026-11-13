@@ -1,5 +1,27 @@
 #include "gamepad.h"
 
+#ifdef WORLDTV_NO_SDL
+// Android: no SDL2 in the NDK; touch drives the UI. The stub keeps
+// gamepad.h's ABI so main.cpp compiles unchanged.
+Gamepad &Gamepad::instance()
+{
+    static Gamepad s;
+    return s;
+}
+
+Gamepad::Gamepad(QObject *parent) : QObject(parent) {}
+Gamepad::~Gamepad() = default;
+
+bool Gamepad::start()
+{
+    m_sdlReady = false;
+    return false;
+}
+
+void Gamepad::pump() {}
+#endif // WORLDTV_NO_SDL
+
+#ifndef WORLDTV_NO_SDL
 #include <SDL.h>
 
 #include <QGuiApplication>
@@ -178,3 +200,4 @@ void Gamepad::pump()
         }
     }
 }
+#endif // WORLDTV_NO_SDL

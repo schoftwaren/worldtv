@@ -6,6 +6,7 @@
 
 #include <QCommandLineParser>
 #include <QEventLoop>
+#include <QFile>
 #include <QGuiApplication>
 #include <QImage>
 #include <QQmlApplicationEngine>
@@ -78,6 +79,7 @@ int main(int argc, char *argv[])
     QCommandLineOption smokeOpt(QStringLiteral("smoke"),
                                 QStringLiteral("headless data-layer smoke test"));
     parser.addOption(smokeOpt);
+
     QCommandLineOption shotOpt(
         QStringLiteral("screenshot"),
         QStringLiteral("render UI states to <prefix>_*.png and exit"),
@@ -103,23 +105,41 @@ int main(int argc, char *argv[])
     ChannelStore::instance().load();
 
     // Gamepad pump: SDL events -> Qt key events, 60 Hz.
+#ifndef WORLDTV_NO_SDL
     Gamepad::instance().start();
     QTimer pumpTimer;
     QObject::connect(&pumpTimer, &QTimer::timeout, &Gamepad::instance(),
                      &Gamepad::pump);
     pumpTimer.start(16);
+#endif
 
     QQmlApplicationEngine engine;
     engine.addImportPath(QStringLiteral(APP_SOURCE_DIR));
     QObject::connect(
         &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
         [] { QCoreApplication::exit(1); }, Qt::QueuedConnection);
+#ifdef WORLDTV_QML_EMBEDDED
+    // Embedded releases: Main.qml rides in the executable's own qrc.
+    // Two prefix candidates (qt_add_qml_module's default prefix moved
+    // across Qt versions - viddeck AppImage chain). load() is void;
+    // pick the candidate that actually exists in the resource system.
+    const QUrl mainUrl =
+        QFile::exists(QStringLiteral(":/worldtv/Main.qml"))
+            ? QUrl(QStringLiteral("qrc:/worldtv/Main.qml"))
+            : QUrl(QStringLiteral("qrc:/qt/qml/worldtv/Main.qml"));
+    engine.load(mainUrl);
+#else
     engine.load(QUrl::fromLocalFile(QStringLiteral(APP_SOURCE_DIR) +
                                     QStringLiteral("/Main.qml")));
+#endif
     std::fprintf(stderr, "[m2] load done, rootObjects=%d\n",
                  int(engine.rootObjects().size()));
     if (engine.rootObjects().isEmpty())
         return 1;
+    // Falsifiable smoke marker (grep target for CI / local verification):
+    // printed ONLY after Main.qml actually mounted.
+    std::fprintf(stderr, "WTV_UI_OK channels=%d\n",
+                 ChannelStore::instance().channelCount());
 
     auto *win = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     const QString winSize = qEnvironmentVariable("WORLDTV_WINDOW_SIZE");

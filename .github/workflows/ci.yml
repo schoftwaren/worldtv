@@ -1,0 +1,323 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux build, test, AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build pkg-config libmpv-dev libsdl2-dev \
+            libgl1-mesa-dev libfuse2 fontconfig libfontconfig1-dev \
+            libxkbcommon-x11-0 libxcb-xinerama0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+            libxcb-cursor0 libxcb-shape0 libxcb-randr0 \
+            python3-pip
+
+      - name: Install Qt 6.10.1 (aqtinstall; runner apt Qt is too old)
+        run: |
+          pip3 install aqtinstall
+          python3 -m aqt install-qt linux desktop 6.10.1 linux_gcc_64 --outputdir ~/Qt
+          # archive layout is .../gcc_64 regardless of the aqt arch name
+          QTDIR=$(echo "$HOME"/Qt/6.10.1/*/ | head -1)
+          echo "QTDIR=$QTDIR" >> "$GITHUB_ENV"
+          echo "$QTDIR/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DWORLDTV_EMBED_QML=ON \
+            -DCMAKE_PREFIX_PATH="$QTDIR"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: AppImage
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          QML_SOURCES_PATHS: ${{ github.workspace }}/app
+        run: |
+          # aqt's Qt sqldrivers are deploy landmines: exotic drivers have
+          # deps NOT in the bundle and linuxdeploy dies on the first one
+          # it walks. The app uses none - drop them all.
+          find "$QTDIR"/plugins/sqldrivers -type f -delete || true
+          mkdir -p appdir/usr/bin appdir/usr/share/applications \
+                   appdir/usr/share/icons/hicolor/512x512/apps
+          cp build/worldtv appdir/usr/bin/worldtv
+          cp res/worldtv.desktop appdir/usr/share/applications/worldtv.desktop
+          cp res/worldtv_512.png appdir/usr/share/icons/hicolor/512x512/apps/worldtv.png
+          mkdir -p appdir/usr/lib
+          # mpvqt_vendor is a STATIC lib -> no module .so to stage (unlike
+          # viddeck); the entry qrc lives in the executable itself.
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+          VERSION="${GITHUB_REF_NAME#v}" ./linuxdeploy-x86_64.AppImage \
+            --appdir appdir --plugin qt --output appimage
+          mkdir dist
+          # app-name comes from the .desktop Name= field, not Exec=
+          { mv WorldTV-*.AppImage "dist/worldtv-${VERSION}-linux-x86_64.AppImage"; } 2>/dev/null \
+            || mv worldtv-*.AppImage "dist/worldtv-${VERSION}-linux-x86_64.AppImage"
+
+      - name: Smoke-run the AppImage (falsifiable)
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: |
+          APP=$(ls dist/*.AppImage)
+          chmod +x "$APP"
+          # xvfb: the AppImage ships only the xcb platform plugin.
+          # HARD-FAIL unless the UI actually mounted (rootObjects=1 ->
+          # WTV_UI_OK marker). A silent qrc-load failure must not look
+          # green (viddeck 5-round lesson).
+          QT_QPA_PLATFORM=xcb timeout 120 xvfb-run -a "$APP" \
+            --appimage-extract-and-run --screenshot /tmp/wtv 2>&1 | tee /tmp/smoke.log
+          grep -q "WTV_UI_OK" /tmp/smoke.log || { echo "SMOKE FAILED: UI did not mount"; exit 1; }
+          grep -q "^SHOT " /tmp/smoke.log || { echo "SMOKE FAILED: no screenshot"; exit 1; }
+          grep -qE "ReferenceError|TypeError" /tmp/smoke.log && { echo "SMOKE FAILED: QML errors"; exit 1; }
+          true
+
+      - name: Portable tar.gz (fuse-free Linux)
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: |
+          APP=$(ls dist/*.AppImage)
+          chmod +x "$APP"
+          # unpack the verified AppImage payload into a plain directory:
+          # same binaries, no libfuse2 needed. Payload root is bin/
+          # (squashfs-root/usr/*), so the launcher execs $DIR/bin/worldtv.
+          "$APP" --appimage-extract >/dev/null
+          NAME="worldtv-${GITHUB_REF_NAME#v}-linux-x86_64"
+          mkdir -p portable
+          mv squashfs-root/usr "portable/$NAME"
+          { echo '#!/bin/bash'
+            echo 'DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"'
+            echo 'exec "$DIR/bin/worldtv" "$@"'
+          } > "portable/$NAME/worldtv.sh"
+          chmod +x "portable/$NAME/worldtv.sh"
+          tar -czf "dist/${NAME}-portable.tar.gz" -C portable "$NAME"
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        with:
+          name: linux-appimage
+          path: dist/*
+          retention-days: 14
+
+  windows:
+    name: Windows build, test, portable zip
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: false
+          msystem: UCRT64
+          install: >
+            git mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative mingw-w64-ucrt-x86_64-qt6-tools
+            mingw-w64-ucrt-x86_64-mpv mingw-w64-ucrt-x86_64-SDL2
+            mingw-w64-ucrt-x86_64-pkgconf zip
+
+      - name: Configure
+        run: |
+          # MSYS2 pkgconf bakes /ucrt64 mount paths into PkgConfig::LIBMPV;
+          # native CMake rejects them -> explicit import-lib + headers.
+          MPV_PREFIX=$(pkg-config --variable=prefix mpv | cygpath -w -f -)
+          echo "MPV prefix: $MPV_PREFIX"
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DWORLDTV_EMBED_QML=ON \
+            -DWORLDTV_MPV_NO_PKGCONFIG=ON \
+            -DMPV_LIBRARY="$MPV_PREFIX\\lib\\libmpv.dll.a" \
+            -DMPV_INCLUDE_DIR="$MPV_PREFIX\\include"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package portable zip
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir staging
+          cp build/worldtv.exe staging/worldtv.exe
+          WD=$(command -v windeployqt6.exe || command -v windeployqt.exe)
+          echo "windeployqt: $WD"
+          "$WD" --qmldir app --release staging/worldtv.exe
+          # windeployqt ships Qt DLLs only - sweep the non-Qt runtime DLLs
+          # (libmpv, av*, SDL2, ...) from the MSYS2 prefix, transitively.
+          for i in 1 2 3; do
+            { ldd staging/worldtv.exe; ldd staging/*.dll; } 2>/dev/null | \
+              awk '$3 ~ /^\/(ucrt64|mingw64)\// {print $3}' | sort -u | \
+              while read -r path; do cp -n "$path" staging/; done
+          done
+          ls staging | wc -l
+          # falsifiable headless data-layer check of the PACKAGED exe
+          ./staging/worldtv.exe --smoke | tee /tmp/winsmoke.log
+          grep -q "SMOKE RESULT: OK" /tmp/winsmoke.log || { echo "WINDOWS SMOKE FAILED"; exit 1; }
+          cp res/worldtv_512.png staging/worldtv.png
+          VERSION="${GITHUB_REF_NAME#v}"
+          zip -r "worldtv-${VERSION}-windows-x86_64.zip" staging
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        with:
+          name: windows-zip
+          path: worldtv-*-windows-x86_64.zip
+          retention-days: 14
+
+  macos:
+    name: macOS build, test, dmg (Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps
+        run: brew install cmake ninja pkg-config mpv sdl2
+
+      - name: Install Qt 6.10.1 (aqtinstall; brew Qt lags)
+        run: |
+          pip3 install aqtinstall
+          python3 -m aqt install-qt mac desktop 6.10.1 clang_64 --outputdir ~/Qt
+          QTDIR=$(echo "$HOME"/Qt/6.10.1/*/ | head -1)
+          echo "QTDIR=$QTDIR" >> "$GITHUB_ENV"
+          echo "$QTDIR/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DWORLDTV_EMBED_QML=ON \
+            -DCMAKE_PREFIX_PATH="$QTDIR;/opt/homebrew"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package .app bundle
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: |
+          APP=WorldTV.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp build/worldtv "$APP/Contents/MacOS/worldtv"
+          {
+            printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+            printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            printf '<plist version="1.0">\n<dict>\n'
+            printf '  <key>CFBundleExecutable</key><string>worldtv</string>\n'
+            printf '  <key>CFBundleIdentifier</key><string>org.worldtv.app</string>\n'
+            printf '  <key>CFBundleName</key><string>WorldTV</string>\n'
+            printf '  <key>CFBundlePackageType</key><string>APPL</string>\n'
+            printf '  <key>CFBundleShortVersionString</key><string>1.0</string>\n'
+            printf '  <key>CFBundleIconFile</key><string>worldtv</string>\n'
+            printf '  <key>NSHighResolutionCapable</key><true/>\n'
+            printf '</dict>\n</plist>\n'
+          } > "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          # icon: png set -> iconset -> icns
+          mkdir worldtv.iconset
+          cp res/worldtv_16.png   worldtv.iconset/icon_16x16.png
+          cp res/worldtv_32.png   worldtv.iconset/icon_16x16@2x.png
+          cp res/worldtv_32.png   worldtv.iconset/icon_32x32.png
+          cp res/worldtv_64.png   worldtv.iconset/icon_32x32@2x.png
+          cp res/worldtv_128.png  worldtv.iconset/icon_128x128.png
+          cp res/worldtv_256.png  worldtv.iconset/icon_128x128@2x.png
+          cp res/worldtv_256.png  worldtv.iconset/icon_256x256.png
+          cp res/worldtv_512.png  worldtv.iconset/icon_256x256@2x.png
+          cp res/worldtv_512.png  worldtv.iconset/icon_512x512.png
+          iconutil -c icns worldtv.iconset -o "$APP/Contents/Resources/worldtv.icns"
+          # Qt frameworks + QML deps
+          macdeployqt "$APP" -qmldir=app -no-strip
+          # brew dylibs (libmpv + its ffmpeg chain) are NOT macdeployqt's
+          # job: sweep them in transitively (otool = ldd equivalent), copy
+          # into Contents/Frameworks, repoint every absolute ref to @rpath.
+          for pass in 1 2 3; do
+            find "$APP" -type f \( -perm -111 -o -name '*.dylib' \) | while read -r bin; do
+              otool -L "$bin" | awk '/opt\/homebrew|usr\/local/ {print $1}'
+            done | sort -u | while read -r dylib; do
+              name=$(basename "$dylib")
+              dest="$APP/Contents/Frameworks/$name"
+              [ -f "$dest" ] || cp "$dylib" "$dest"
+            done
+            find "$APP" -type f \( -perm -111 -o -name '*.dylib' \) | while read -r bin; do
+              otool -L "$bin" | awk '/opt\/homebrew|usr\/local/ {print $1}' | while read -r ref; do
+                name=$(basename "$ref")
+                [ -f "$APP/Contents/Frameworks/$name" ] && \
+                  install_name_tool -change "$ref" "@rpath/$name" "$bin" || true
+              done
+            done
+          done
+          install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/worldtv"
+          codesign --force --deep --sign - "$APP" 2>/dev/null || true
+          # falsifiable smoke of the PACKAGED bundle (data layer, headless)
+          ./"$APP"/Contents/MacOS/worldtv --smoke | tee /tmp/macsmoke.log
+          grep -q "SMOKE RESULT: OK" /tmp/macsmoke.log || { echo "MACOS SMOKE FAILED"; exit 1; }
+
+      - name: Build dmg
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir dmg-src && mv WorldTV.app dmg-src/
+          hdiutil create -volname "WorldTV" -srcfolder dmg-src \
+            -format UDZO -ov "worldtv-${VERSION}-macos-arm64.dmg"
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        with:
+          name: macos-dmg
+          path: worldtv-*-macos-arm64.dmg
+          retention-days: 14
+
+  release:
+    name: Attach artifacts to GitHub release
+    needs: [linux, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: |
+          cd dist
+          # only top-level regular files; exclude SHA256SUMS itself
+          # (created by the redirect before find runs -> self-hash line)
+          find . -maxdepth 1 -type f ! -name SHA256SUMS \
+            -exec sha256sum --tag {} + > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

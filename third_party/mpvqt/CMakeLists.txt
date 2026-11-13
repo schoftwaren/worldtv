@@ -33,7 +33,7 @@ find_package(PkgConfig QUIET)
 # (/ucrt64/include) into PkgConfig::LIBMPV that native CMake cannot
 # resolve - there, configure with explicit MPV_LIBRARY + MPV_INCLUDE_DIR
 # instead (CI resolves the prefix via pkg-config + cygpath itself).
-if(NOT ANDROID AND NOT VIDDECK_MPV_NO_PKGCONFIG AND PkgConfig_FOUND)
+if(NOT ANDROID AND NOT WORLDTV_MPV_NO_PKGCONFIG AND PkgConfig_FOUND)
     pkg_check_modules(LIBMPV IMPORTED_TARGET mpv)
 endif()
 if(TARGET PkgConfig::LIBMPV)
