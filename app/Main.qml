@@ -15,11 +15,13 @@ ApplicationWindow {
     // ------------------------------------------------------------------
 
     visible: false // show() from main after the size is applied
-    // Explicit size: without QML-declared width/height the window gets
-    // auto-sized to content (came up 941x1030 under xvfb; clobbered any
-    // resize() from main). WORLDTV_WINDOW_SIZE overrides via QQmlProperty.
-    width: 1280
-    height: 800
+    // Explicit size, desktop only: without QML-declared width/height the
+    // window gets auto-sized to content on desktop (came up 941x1030 under
+    // xvfb; clobbered any resize() from main). WORLDTV_WINDOW_SIZE
+    // overrides via QQmlProperty. Android keeps auto sizing (fullscreen
+    // surface owns the geometry).
+    width: Qt.platform.os === "android" ? implicitWidth : 1280
+    height: Qt.platform.os === "android" ? implicitHeight : 800
     color: "#101418"
     font.pixelSize: 15
 
