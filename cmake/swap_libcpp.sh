@@ -5,7 +5,7 @@
 # with the debug keystore (fine for sideload/GitHub; never Play-updatable).
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-APK="$REPO/build-android-arm64/android-build/build/outputs/apk/release/android-build-release-unsigned.apk"
+APK="$REPO/build-android-arm64/android-build/worldtv.apk"
 MPVLIB="${MPV_LIBRARY:-$HOME/Android/libmpv-android/arm64-v8a/libmpv.so}"
 BT="${ANDROID_BUILD_TOOLS:-$HOME/Android/android-sdk/build-tools/35.0.0}"
 DIR="$(dirname "$MPVLIB")"
