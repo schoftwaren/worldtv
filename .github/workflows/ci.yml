@@ -72,8 +72,10 @@ jobs:
             --appdir appdir --plugin qt --output appimage
           mkdir dist
           # app-name comes from the .desktop Name= field, not Exec=
-          { mv WorldTV-*.AppImage "dist/worldtv-${VERSION}-linux-x86_64.AppImage"; } 2>/dev/null \
-            || mv worldtv-*.AppImage "dist/worldtv-${VERSION}-linux-x86_64.AppImage"
+          # NOTE: use GITHUB_REF_NAME here; the VERSION= prefix above is
+          # env-scoped to the linuxdeploy command only (empty in mv ->
+          # "worldtv--linux" double-dash asset name, v1.0.0)
+          mv worldtv-*.AppImage "dist/worldtv-${GITHUB_REF_NAME#v}-linux-x86_64.AppImage"
 
       - name: Smoke-run the AppImage (falsifiable)
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -87,6 +89,10 @@ jobs:
           QT_QPA_PLATFORM=xcb timeout 120 xvfb-run -a "$APP" \
             --appimage-extract-and-run --screenshot /tmp/wtv 2>&1 | tee /tmp/smoke.log
           grep -q "WTV_UI_OK" /tmp/smoke.log || { echo "SMOKE FAILED: UI did not mount"; exit 1; }
+          # the catalog must have loaded from the embedded qrc: a count of
+          # 0 means the packaged binary lost its resource (source-tree
+          # fallback masks this everywhere except a real package)
+          grep -qE "WTV_UI_OK channels=[1-9]" /tmp/smoke.log || { echo "SMOKE FAILED: embedded catalog missing"; exit 1; }
           grep -q "^SHOT " /tmp/smoke.log || { echo "SMOKE FAILED: no screenshot"; exit 1; }
           grep -qE "ReferenceError|TypeError" /tmp/smoke.log && { echo "SMOKE FAILED: QML errors"; exit 1; }
           true

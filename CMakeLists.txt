@@ -46,6 +46,12 @@ if(NOT ANDROID)
 endif()
 
 # ---- embedded catalog resource -------------------------------------------
+# QT_RESOURCE_ALIAS is REQUIRED: without it the file lands at
+# /worldtv/app/catalog.json (full repo-relative path) while the code reads
+# qrc:/worldtv/catalog.json. The source-tree fallback masked this in every
+# dev/CI test; only true packaged binaries (no checkout) expose it
+# (v1.0.0 AppImage: UI fine, channels=0).
+set_property(SOURCE app/catalog.json PROPERTY QT_RESOURCE_ALIAS catalog.json)
 qt_add_resources(worldtv "catalog"
     PREFIX "/worldtv"
     FILES app/catalog.json
