@@ -22,13 +22,13 @@
 2. `02_live_player_redbull.png` — full-screen player mid-stream
 3. `03_back_to_grid.png` — back on the couch
 
-### Upload files (itch/builds/1.0.0/)
+### Upload files (itch/builds/1.0.1/)
 | File | "This file will be played in the browser" | Download page |
 |---|---|---|
-| `worldtv-1.0.0-linux-x86_64.AppImage` | no | default |
-| `worldtv-1.0.0-linux-x86_64-portable.tar.gz` | no | default |
-| `worldtv-1.0.0-windows-x86_64.zip` | no | default |
-| `worldtv-1.0.0-android-arm64.apk` | no | default |
+| `worldtv-1.0.1-linux-x86_64.AppImage` | no | default |
+| `worldtv-1.0.1-linux-x86_64-portable.tar.gz` | no | default |
+| `worldtv-1.0.1-windows-x86_64.zip` | no | default |
+| `worldtv-1.0.1-android-arm64.apk` | no | default |
 | `SHA256SUMS` | no | hidden or default |
 
 ---
@@ -90,6 +90,8 @@ The catalog is built from the iptv-org open database (github.com/iptv-org), filt
 
 [b]Release notes[/b]
 [list]
+[list]
+[*][b]1.0.1[/b] — the window now opens at its proper couch size (the first release could come up shaped like its own content on some Linux setups). Android version stamp fixed.
 [*][b]1.0.0[/b] — first public release. Catalog from iptv-org, mirror failover, gamepad support, embedded UI, Linux/Windows/Android builds.
 [/list]
 

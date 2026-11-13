@@ -26,8 +26,11 @@ the page form is yours).
       ./build-embed/worldtv --screenshot /tmp/wtv-kit/wtv
     python3 tools/make_itch_art.py
 
-    # 2. builds (already built + verified for 1.0.0):
-    #    itch/builds/1.0.0/ = GitHub v1.0.0 release assets + SHA256SUMS.
+    # 2. builds: CI attaches them to the GitHub release on tag; pull into
+    #    itch/builds/<ver>/ (AppImage, portable tar.gz, win zip, apk,
+    #    SHA256SUMS) + add the INSTALL.txt. For 1.0.1 the Android APK was
+    #    also built locally (source-Qt cross build, cmake/swap_libcpp.sh)
+    #    and carries the manifest version stamp.
 
 ## Version bump notes
 - Window size: the QML root MUST declare width/height (Main.qml); the env
