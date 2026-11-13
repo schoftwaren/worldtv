@@ -133,10 +133,9 @@ if(WEMBED_QML)
 endif()
 
 # SDL2 is a desktop-only couch input; Android ships no SDL (touch covers
-# it). The stub keeps gamepad.h's ABI so main.cpp links unchanged.
+# it). gamepad.cpp's WORLDTV_NO_SDL block compiles the stub there; the
+# rest of the app is untouched.
 if(ANDROID)
-    target_sources(worldtv PRIVATE app/gamepad_stub.cpp)
     target_compile_definitions(worldtv PRIVATE WORLDTV_NO_SDL=1)
-    set_property(SOURCE app/gamepad.cpp PROPERTY HEADER_FILE_ONLY ON)
 endif()
 
