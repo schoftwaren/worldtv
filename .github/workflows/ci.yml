@@ -194,7 +194,9 @@ jobs:
 
   macos:
     name: macOS build, test, dmg (Apple Silicon)
-    runs-on: macos-14
+    # macos-14 is REJECTED on the free plan (job cancelled before any step,
+    # annotation "configuration ... not supported"); macos-latest works.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -239,7 +241,7 @@ jobs:
             printf '  <key>CFBundleIdentifier</key><string>org.worldtv.app</string>\n'
             printf '  <key>CFBundleName</key><string>WorldTV</string>\n'
             printf '  <key>CFBundlePackageType</key><string>APPL</string>\n'
-            printf '  <key>CFBundleShortVersionString</key><string>1.0</string>\n'
+            printf '  <key>CFBundleShortVersionString</key><string>${GITHUB_REF_NAME#v}</string>\n'
             printf '  <key>CFBundleIconFile</key><string>worldtv</string>\n'
             printf '  <key>NSHighResolutionCapable</key><true/>\n'
             printf '</dict>\n</plist>\n'

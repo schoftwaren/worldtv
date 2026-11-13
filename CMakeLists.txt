@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(worldtv VERSION 1.0 LANGUAGES CXX)
+project(worldtv VERSION 1.0.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,6 +69,25 @@ if(WORLDTV_BUILD_TESTS)
         Qt6::Test Qt6::Gui appcore
     )
     add_test(NAME catalog COMMAND tst_catalog)
+
+    # Nav regression: sidebar Enter AND mouse click must apply the country
+    # filter (an unqualified applyNav() inside the delegate threw
+    # "ReferenceError" and silently killed both paths). Drives the REAL
+    # Main.qml with QTest key/mouse events; runs offscreen.
+    add_executable(tst_nav test/tst_nav.cpp
+        app/gamepad.cpp app/recents.cpp app/wtvmpvitem.cpp
+    )
+    target_link_libraries(tst_nav PRIVATE
+        Qt6::Test Qt6::Quick Qt6::QuickControls2 Qt6::Qml Qt6::Gui
+        Qt6::Network mpvqt_vendor appcore
+    )
+    if(NOT ANDROID)
+        target_link_libraries(tst_nav PRIVATE SDL2::SDL2)
+    endif()
+    add_test(NAME nav COMMAND tst_nav)
+    set_tests_properties(nav PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 120)
 endif()
 
 add_library(appcore STATIC

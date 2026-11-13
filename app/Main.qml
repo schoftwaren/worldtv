@@ -307,6 +307,11 @@ ApplicationWindow {
                         id: navDel
                         width: navList.width
                         height: 46
+                        // Clicks must not move keyboard focus off the
+                        // lists (the view owns it); harmless either way
+                        // on this Qt (clicks don't steal focus) but
+                        // explicit is safer.
+                        focusPolicy: Qt.NoFocus
                         focus: false
                         highlighted: ListView.isCurrentItem
                         background: Rectangle {
@@ -339,7 +344,19 @@ ApplicationWindow {
                                 font.pixelSize: 13
                             }
                         }
-                        onClicked: navList.currentIndex = index
+                        onClicked: {
+                            // Mouse click AND keyboard Return both land
+                            // here (ItemDelegate activates the view's
+                            // current item on Enter). A click IS an
+                            // activation: set the highlight AND apply the
+                            // filter. applyNav must be QUALIFIED — an
+                            // unqualified call cannot resolve from inside
+                            // a delegate (ReferenceError: applyNav is not
+                            // defined), which silently killed this whole
+                            // path before.
+                            navList.currentIndex = index
+                            navList.applyNav()
+                        }
                     }
 
                     function applyNav() {
