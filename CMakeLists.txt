@@ -52,15 +52,18 @@ qt_add_resources(worldtv "catalog"
 )
 
 # ---- tests ----------------------------------------------------------------
-enable_testing()
-add_executable(tst_catalog test/tst_catalog.cpp)
-target_compile_definitions(tst_catalog PRIVATE
-    APP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app"
-)
-target_link_libraries(tst_catalog PRIVATE
-    Qt6::Test Qt6::Gui appcore
-)
-add_test(NAME catalog COMMAND tst_catalog)
+option(WORLDTV_BUILD_TESTS "build the catalog test" ON)
+if(WORLDTV_BUILD_TESTS)
+    enable_testing()
+    add_executable(tst_catalog test/tst_catalog.cpp)
+    target_compile_definitions(tst_catalog PRIVATE
+        APP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app"
+    )
+    target_link_libraries(tst_catalog PRIVATE
+        Qt6::Test Qt6::Gui appcore
+    )
+    add_test(NAME catalog COMMAND tst_catalog)
+endif()
 
 add_library(appcore STATIC
     app/channelstore.h app/channelstore.cpp
