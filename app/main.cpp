@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlProperty>
 #include <QQuickWindow>
 #include <QTimer>
 #include <cstdio>
@@ -143,14 +144,18 @@ int main(int argc, char *argv[])
 
     auto *win = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     const QString winSize = qEnvironmentVariable("WORLDTV_WINDOW_SIZE");
+    // Override through the QML property system (QQmlProperty::write breaks
+    // the QML width/height bindings and sticks — QWindow::resize does not:
+    // the QML-side sizing re-asserts itself after show).
+    win->show();
     if (!winSize.isEmpty()) {
         const QStringList wh = winSize.split(QLatin1Char('x'));
-        if (wh.size() == 2 && wh[0].toInt() > 0 && wh[1].toInt() > 0)
-            win->resize(wh[0].toInt(), wh[1].toInt());
-    } else {
-        win->resize(1280, 800); // Steam Deck native
+        if (wh.size() == 2 && wh[0].toInt() > 0 && wh[1].toInt() > 0) {
+            QQmlProperty::write(win, QStringLiteral("width"), wh[0].toInt());
+            QQmlProperty::write(win, QStringLiteral("height"), wh[1].toInt());
+        }
     }
-    win->show();
+    std::fprintf(stderr, "[shot] afterWrite win=%dx%d\n", win->width(), win->height());
 
     const QString autoPlay = qEnvironmentVariable("WORLDTV_AUTOPLAY");
     if (parser.isSet(shotOpt)) {
@@ -161,6 +166,22 @@ int main(int argc, char *argv[])
             pump.exec();
         };
         auto grab = [&](const QString &suffix) {
+            // xcb re-sizes the window shortly after show (a phantom
+            // 941x1030 without any WM; see the no-SDL probe in git log).
+            // Re-assert the requested size immediately before grabbing so
+            // kit shots always come out at the requested resolution.
+            if (!winSize.isEmpty()) {
+                const QStringList wh = winSize.split(QLatin1Char('x'));
+                if (wh.size() == 2 && wh[0].toInt() > 0 && wh[1].toInt() > 0) {
+                    QQmlProperty::write(win, QStringLiteral("width"),
+                                        wh[0].toInt());
+                    QQmlProperty::write(win, QStringLiteral("height"),
+                                        wh[1].toInt());
+                    // Let xcb apply the reconfigure + the FBO reallocate
+                    // (first grab raced it and came out at the old size).
+                    wait(150);
+                }
+            }
             const QImage img = win->grabWindow();
             const QString file = prefix + suffix;
             std::printf("%s %s\n", img.save(file) ? "SHOT" : "SHOT_FAIL",

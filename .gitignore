@@ -3,3 +3,6 @@ build/
 build-embed/
 build-android-arm64/
 *.apk
+
+# itch upload zips/builds never belong in git
+itch/builds/
