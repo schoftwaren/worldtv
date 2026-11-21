@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAbstractListModel>
 #include <QHash>
 #include <QObject>
 #include <QString>
@@ -8,6 +9,8 @@
 #include <QVector>
 
 class QNetworkAccessManager;
+class QTimer;
+class ChannelModel;
 
 // One channel catalog for the whole app: parses the (embedded or refreshed)
 // iptv-org-derived catalog.json, exposes countries/categories and the
@@ -18,13 +21,18 @@ class QNetworkAccessManager;
 // The C++ refresh path (refresh()) re-fetches the raw api dumps, runs the
 // same merge in-process and persists the result under AppDataLocation;
 // on the next start that file wins over the embedded baseline.
+//
+// Perf: rebuildFiltered() produces an INDEX SLICE (not QVariantMap rows);
+// ChannelModel exposes that slice lazily to QML (data() only for tiles the
+// GridView actually instantiates) so selecting a 1600-channel country
+// builds 60 tiles, not 1600 maps. Search re-filters on an idle timer.
 class ChannelStore : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool loaded READ loaded NOTIFY loadedChanged)
     Q_PROPERTY(int channelCount READ channelCount NOTIFY loadedChanged)
     Q_PROPERTY(int countryCount READ countryCount NOTIFY loadedChanged)
     Q_PROPERTY(bool refreshing READ refreshing NOTIFY refreshingChanged)
-    Q_PROPERTY(QVariantList channels READ channels NOTIFY channelsChanged)
+    Q_PROPERTY(ChannelModel *channels READ channels CONSTANT)
     Q_PROPERTY(QVariantList countries READ countries CONSTANT)
     Q_PROPERTY(QVariantList categories READ categories CONSTANT)
     Q_PROPERTY(QString filterCountry READ filterCountry WRITE setFilterCountry
@@ -47,7 +55,7 @@ public:
     int countryCount() const { return m_countries.size(); }
     bool refreshing() const { return m_refreshing; }
 
-    const QVariantList &channels() const { return m_filtered; }
+    ChannelModel *channels() const { return m_model; }
     const QVariantList &countries() const { return m_countryList; }
     const QVariantList &categories() const { return m_catList; }
 
@@ -71,6 +79,10 @@ public:
     // Re-fetch the iptv-org api dumps and rebuild the catalog in place.
     // Persists under AppDataLocation/catalog.json on success.
     Q_INVOKABLE void refresh();
+
+    // Apply a pending debounced search NOW (tests, --smoke, and callers
+    // that read the slice synchronously after setSearch).
+    Q_INVOKABLE void flushSearch();
 
     // Test/CI hook: parse any catalog file directly (bypasses qrc lookup).
     bool loadFromFile(const QString &path);
@@ -106,7 +118,9 @@ private:
 
     void rebuildCountryAndCatLists();
     void rebuildFiltered();
+    void refreshFavMask(); // recompute m_favMask from Favorites
     QVariantMap chanRow(const Chan &c) const;
+    QVariantMap channelAt(int sliceRow) const;
     static int qualityRank(const QString &q);
     void clearFilter();
 
@@ -116,7 +130,8 @@ private:
     QVector<Ctry> m_countries;
     QHash<QString, QPair<QString, QString>> m_countryMeta; // cc -> (name, flag)
 
-    QVariantList m_filtered;
+    QVector<int> m_filtered;  // slice of indexes into m_chans (lazy model)
+    QVector<bool> m_favMask;  // parallel to m_filtered, Favorites check
     QVariantList m_countryList;
     QVariantList m_catList;
 
@@ -127,4 +142,49 @@ private:
 
     QNetworkAccessManager *m_nam = nullptr;
     qint64 m_built = 0; // epoch seconds stamped by the builder
+    QTimer *m_searchTimer = nullptr; // debounce search re-filter (120ms)
+    ChannelModel *m_model = nullptr; // exposed to QML as Store.channels
+    friend class ChannelModel;
+};
+
+// Lazy QML model over the store's filtered index slice. Roles mirror the
+// old QVariantMap rows (id/name/cc/logo/cats/nUrls/quality/fav/countryName/
+// flag) so tiles and the player overlay read identically. Row maps are
+// built on demand in data() — ONLY for tiles the GridView instantiates.
+class ChannelModel : public QAbstractListModel {
+    Q_OBJECT
+    Q_PROPERTY(int count READ count NOTIFY countChanged)
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        CcRole,
+        LogoRole,
+        CatsRole,
+        NUrlsRole,
+        QualityRole,
+        FavRole,
+        CountryNameRole,
+        FlagRole,
+    };
+
+    explicit ChannelModel(ChannelStore *store, QObject *parent = nullptr);
+
+    int rowCount(const QModelIndex &parent = QModelIndex()) const override;
+    QVariant data(const QModelIndex &index,
+                  int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
+
+    int count() const { return int(m_store->m_filtered.size()); }
+    Q_INVOKABLE QVariantMap get(int row) const; // nav/test convenience
+    Q_INVOKABLE void refreshFavorites();
+
+signals:
+    void countChanged();
+
+private:
+    void replaceSlice(QVector<int> slice); // store calls on re-filter
+    ChannelStore *m_store;
+    friend class ChannelStore;
 };

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(worldtv VERSION 1.0.2 LANGUAGES CXX)
+project(worldtv VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,7 @@ add_subdirectory(third_party/mpvqt)
 
 qt_add_executable(worldtv
     app/main.cpp
+    app/appsettings.h app/appsettings.cpp
     app/channelstore.h app/channelstore.cpp
     app/favorites.h app/favorites.cpp
     app/gamepad.h app/gamepad.cpp
@@ -93,6 +94,7 @@ endif()
 add_library(appcore STATIC
     app/channelstore.h app/channelstore.cpp
     app/favorites.h app/favorites.cpp
+    app/appsettings.h app/appsettings.cpp
 )
 target_include_directories(appcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/app
@@ -101,7 +103,6 @@ target_link_libraries(appcore PUBLIC Qt6::Gui Qt6::Network)
 target_compile_definitions(appcore PUBLIC
     APP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/app"
 )
-
 # ---- Android: package libmpv + its ffmpeg deps into the APK -------------
 # Same two-layer silent-exit root cause viddeck hit (2026-10-01): the app
 # lib NEEDs libmpv.so, which NEEDs libav*/libsw*/libc++_shared; none are

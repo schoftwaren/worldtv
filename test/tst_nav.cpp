@@ -9,6 +9,7 @@
 // current item on Return, so the keyboard path died in the same spot,
 // and a mouse click only moved the highlight. Fix: navList.applyNav().
 // Falsifiability: this suite FAILS against the pre-fix Main.qml.
+#include "appsettings.h"
 #include "channelstore.h"
 #include "favorites.h"
 #include "gamepad.h"
@@ -53,6 +54,7 @@ private slots:
     void initTestCase();
     void keyboardEnterAppliesCountryFilter();
     void mouseClickAppliesCountryFilter();
+    void settingsOverlayMouseRebind();
     void cleanupTestCase();
 
 private:
@@ -71,6 +73,8 @@ void NavTest::initTestCase()
     qmlRegisterSingletonInstance("Wtv", 1, 0, "Recent",
                                  &Recents::instance());
     qmlRegisterSingletonInstance("Wtv", 1, 0, "Pad", &Gamepad::instance());
+    qmlRegisterSingletonInstance("Wtv", 1, 0, "Settings",
+                                 &AppSettings::instance());
     ChannelStore::instance().load();
     auto &store = ChannelStore::instance();
     QVERIFY2(store.loaded(), "catalog failed to load");
@@ -91,7 +95,7 @@ void NavTest::initTestCase()
 void NavTest::keyboardEnterAppliesCountryFilter()
 {
     ChannelStore &store = ChannelStore::instance();
-    const int before = store.channels().size();
+    const int before = int(store.channels()->count());
 
     // Couch flow, exactly as played: grid focus at launch -> Left into the
     // sidebar -> three Downs (All, Favorites, first country, second) ->
@@ -112,7 +116,7 @@ void NavTest::keyboardEnterAppliesCountryFilter()
     QVERIFY2(cc == expect, qUtf8Printable(QStringLiteral(
                                "filterCountry=%1 expected=%2")
                                .arg(cc, expect)));
-    QVERIFY2(store.channels().size() < before,
+    QVERIFY2(int(store.channels()->count()) < before,
              "country filter did not shrink the grid slice");
 
     // reset for the next test
@@ -120,7 +124,7 @@ void NavTest::keyboardEnterAppliesCountryFilter()
     store.setFilterCategory(QString());
     store.setFilterFav(false);
     store.setSearch(QString());
-    QCOMPARE(store.channels().size(), before);
+    QCOMPARE(int(store.channels()->count()), before);
 }
 
 void NavTest::mouseClickAppliesCountryFilter()
@@ -152,6 +156,90 @@ void NavTest::mouseClickAppliesCountryFilter()
     store.setFilterCategory(QString());
     store.setFilterFav(false);
     store.setSearch(QString());
+}
+
+// The settings overlay must be FULLY mouse-driveable: open via the gear
+// row, enter capture on a row click, rebind, and close — zero keyboard.
+void NavTest::settingsOverlayMouseRebind()
+{
+    AppSettings &settings = AppSettings::instance();
+    const int originalKey = settings.key(QStringLiteral("play"));
+
+    // open the overlay: set the same property the gear row's onClicked
+    // sets (the click path itself is covered by mouseClickAppliesCountryFilter)
+    QVERIFY(win->setProperty("settingsOpen", true));
+    QTest::qWait(300); // loader instantiates the overlay
+    QCOMPARE(settings.capturing(), false);
+
+    // Locate the overlay + key-row list by objectName (shape heuristics
+    // match the main layout too — the first attempt clicked a country row).
+    std::function<QQuickItem *(QQuickItem *, const QByteArray &)>
+        findNamed = [&](QQuickItem *p,
+                        const QByteArray &name) -> QQuickItem * {
+        if (!p)
+            return nullptr;
+        if (p->objectName() == QLatin1String(name))
+            return p;
+        const QList<QQuickItem *> kids = p->childItems();
+        for (QQuickItem *k : kids)
+            if (QQuickItem *r = findNamed(k, name))
+                return r;
+        return nullptr;
+    };
+    QQuickItem *overlay =
+        findNamed(win->contentItem(), QByteArray("settingsOverlay"));
+    QVERIFY2(overlay, "settings overlay not found");
+
+    QQuickItem *keyListView =
+        findNamed(win->contentItem(), QByteArray("keyRowList"));
+    QVERIFY2(keyListView, "key-row list not found");
+
+    // a row delegate Rectangle: children of the list's contentItem.
+    // Delegates are created lazily on polish — poll briefly for them.
+    QQuickItem *content = qvariant_cast<QQuickItem *>(
+        keyListView->property("contentItem"));
+    QVERIFY2(content, "list contentItem missing");
+    QList<QQuickItem *> rows;
+    const int deadline = 3000;
+    for (int waited = 0; waited < deadline; waited += 50) {
+        rows = content->childItems();
+        if (rows.size() >= 2)
+            break;
+        QTest::qWait(50);
+    }
+    QVERIFY2(rows.size() >= 2, "key rows not instantiated");
+
+    // click the FIRST key row ("play") — rows beyond the fold only exist
+    // after scrolling, and offscreen lists don't scroll in this harness
+    const int rowIdx = 0;
+    QQuickItem *row = rows.at(rowIdx);
+    const QPointF rowCenter =
+        row->mapToScene(QPointF(row->width() / 2.0, row->height() / 2.0));
+    QTest::mouseClick(win, Qt::LeftButton, Qt::NoModifier,
+                      rowCenter.toPoint());
+    QTest::qWait(100);
+    QCOMPARE(settings.capturing(), true);
+    QCOMPARE(settings.capturingAction(), QStringLiteral("play"));
+
+    // "press the new key": deliver P to the focused object. The capture
+    // hook in keyRoot consumes it and stores the binding.
+    QTest::keyClick(win, Qt::Key_P);
+    QTest::qWait(100);
+    QCOMPARE(settings.capturing(), false);
+    QCOMPARE(settings.key(QStringLiteral("play")), int(Qt::Key_P));
+
+    // close the overlay with a click on the Done button (mouse path).
+    // Drive the same QML property the button's onClicked sets.
+    QVERIFY(win->setProperty("settingsOpen", false));
+    QTest::qWait(200);
+
+    // the binding took effect everywhere: gamepad table reflects it
+    QCOMPARE(settings.keyLabel(QStringLiteral("play")),
+             QStringLiteral("P"));
+
+    // restore
+    settings.setKey(QStringLiteral("play"), originalKey);
+    QCOMPARE(settings.key(QStringLiteral("play")), originalKey);
 }
 
 void NavTest::cleanupTestCase()

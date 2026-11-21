@@ -28,6 +28,8 @@ void Gamepad::pump() {}
 #include <QKeyEvent>
 #include <QWindow>
 
+#include "appsettings.h"
+
 Gamepad &Gamepad::instance()
 {
     static Gamepad s;
@@ -70,6 +72,7 @@ void Gamepad::openController(int deviceIndex)
         return;
     const char *n = SDL_GameControllerName(m_controller);
     m_name = n ? QString::fromUtf8(n) : QStringLiteral("gamepad");
+    AppSettings::instance().setGamepadInfo(true, m_name);
     emit connectedChanged();
 }
 
@@ -79,12 +82,15 @@ void Gamepad::closeController()
         SDL_GameControllerClose(m_controller);
         m_controller = nullptr;
         m_name.clear();
+        AppSettings::instance().setGamepadInfo(false, QString());
         emit connectedChanged();
     }
 }
 
 void Gamepad::emitKey(Qt::Key key, bool pressed)
 {
+    // The key press carries the BUTTON's default key (arrow/Return/...);
+    // pump() rebinds action keys through AppSettings before calling this.
     QKeyEvent press(pressed ? QEvent::KeyPress : QEvent::KeyRelease, key,
                     Qt::NoModifier);
     if (QGuiApplication::focusObject())
@@ -111,6 +117,15 @@ void Gamepad::pump()
         case SDL_CONTROLLERBUTTONUP: {
             const bool down = ev.type == SDL_CONTROLLERBUTTONDOWN;
             using CK = SDL_GameControllerButton;
+            // Action buttons re-map through the user's keyboard bindings
+            // (settings overlay) so "next feed" stays on the same button
+            // even after N is rebound to, say, Tab. D-pad/arrows stay
+            // navigation keys (not rebindable).
+            auto bind = [](const char *action, Qt::Key fallback) {
+                const int k = AppSettings::instance().key(
+                    QLatin1String(action));
+                return k == Qt::Key_unknown ? fallback : Qt::Key(k);
+            };
             switch (CK(ev.cbutton.button)) {
             case SDL_CONTROLLER_BUTTON_DPAD_UP:
                 emitKey(Qt::Key_Up, down);
@@ -125,31 +140,31 @@ void Gamepad::pump()
                 emitKey(Qt::Key_Right, down);
                 break;
             case SDL_CONTROLLER_BUTTON_A:
-                emitKey(Qt::Key_Return, down);
+                emitKey(bind("play", Qt::Key_Return), down);
                 break;
             case SDL_CONTROLLER_BUTTON_B:
-                emitKey(Qt::Key_Escape, down);
+                emitKey(bind("back", Qt::Key_Escape), down);
                 break;
             case SDL_CONTROLLER_BUTTON_X:
-                emitKey(Qt::Key_F, down);
+                emitKey(bind("favorite", Qt::Key_F), down);
                 break;
             case SDL_CONTROLLER_BUTTON_Y:
-                emitKey(Qt::Key_Slash, down);
+                emitKey(bind("search", Qt::Key_Slash), down);
                 break;
             case SDL_CONTROLLER_BUTTON_START:
-                emitKey(Qt::Key_Space, down);
+                emitKey(bind("pause", Qt::Key_Space), down);
                 break;
             case SDL_CONTROLLER_BUTTON_BACK:
-                emitKey(Qt::Key_M, down);
+                emitKey(bind("mute", Qt::Key_M), down);
                 break;
             case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-                emitKey(Qt::Key_PageUp, down);
+                emitKey(bind("prevChannel", Qt::Key_PageUp), down);
                 break;
             case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-                emitKey(Qt::Key_PageDown, down);
+                emitKey(bind("nextChannel", Qt::Key_PageDown), down);
                 break;
             case SDL_CONTROLLER_BUTTON_LEFTSTICK:
-                emitKey(Qt::Key_R, down);
+                emitKey(bind("reload", Qt::Key_R), down);
                 break;
             default:
                 break;

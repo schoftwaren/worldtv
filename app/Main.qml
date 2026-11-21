@@ -45,6 +45,7 @@ ApplicationWindow {
     // ---------------- app state ----------------
     property string view: "browse"            // browse | player
     property bool searchOpen: false
+    property bool settingsOpen: false
     property var currentChannel: null
     property int streamIndex: 0
     property string playState: "idle"         // idle|connecting|playing|error
@@ -54,6 +55,27 @@ ApplicationWindow {
     property bool mpvArmed: false     // core usable (renderer or not)
     property var pendingChannel: null
     property string debugState: ""
+
+    // Bound-key helpers: keyboard handlers compare against Settings.key()
+    // so the settings overlay rebinds them at runtime. Returns true when
+    // the event matched `action` (callers accept it).
+    function isKey(ev, action) {
+        const k = Settings.key(action)
+        return ev.key === k ||
+               (k === Qt.Key_Return && ev.key === Qt.Key_Enter) ||
+               (k === Qt.Key_Enter && ev.key === Qt.Key_Return)
+    }
+    function gotoSettings() {
+        settingsOpen = true
+        settingsLoader.item.forceActiveFocus()
+    }
+    function closeSettings() {
+        settingsOpen = false
+        if (view === "player")
+            keyRoot.forceActiveFocus()
+        else
+            gridLoader.item.forceActiveFocus()
+    }
 
     function computeDebugState() {
         debugState = view + "/" + playState +
@@ -103,11 +125,14 @@ ApplicationWindow {
         const headers = []
         if (s.ref)
             headers.push("Referer: " + s.ref)
-        mpv.setProperty("http-header-fields", headers)
-        mpv.setProperty("user-agent",
+        // setProp/sendCommand: GUI-thread sanitizing wrappers — plain
+        // setProperty() queues JS arrays cross-thread and intermittently
+        // crashes on Android (QJSValue::toVariant off the GUI thread).
+        mpv.setProp("http-header-fields", headers)
+        mpv.setProp("user-agent",
                         s.ua ? s.ua : "VLC/3.0.20 LibVLC/3.0.20")
-        mpv.setProperty("network-timeout", 15)
-        mpv.command(["loadfile", s.u])
+        mpv.setProp("network-timeout", 15)
+        mpv.sendCommand(["loadfile", s.u])
         computeDebugState()
     }
 
@@ -124,8 +149,29 @@ ApplicationWindow {
         }
     }
 
+    // PgUp/PgDn + mouse wheel: hop the filtered slice while playing.
+    function zapChannel(step) {
+        const total = Store.channels.count
+        if (total === 0)
+            return
+        let cur = -1
+        for (let i = 0; i < total; i++) {
+            if (currentChannel &&
+                    Store.channels.get(i).id === currentChannel.id) {
+                cur = i
+                break
+            }
+        }
+        const nx = Store.channels.get((cur + step + total) % total)
+        if (nx && nx.id) {
+            currentChannel = nx
+            streamIndex = 0
+            startStream()
+        }
+    }
+
     function stopPlayback() {
-        mpv.command(["stop"])
+        mpv.sendCommand(["stop"])
         playState = "idle"
         playError = ""
         view = "browse"
@@ -150,43 +196,42 @@ ApplicationWindow {
         anchors.fill: parent
 
         Keys.onPressed: (ev) => {
+            // Key-capture mode (settings overlay): every key goes to the
+            // capture, nothing else fires.
+            if (Settings.capturing) {
+                Settings.captureKey(ev.key)
+                ev.accepted = true
+                return
+            }
             if (root.view === "player") {
-                if (ev.key === Qt.Key_Escape) {
+                if (ev.key === Qt.Key_Escape ||
+                        ev.key === Qt.Key_Back ||
+                        root.isKey(ev, "back")) {
                     root.stopPlayback()
                     ev.accepted = true
-                } else if (ev.key === Qt.Key_Space) {
-                    mpv.setProperty("pause", !mpv.getProperty("pause"))
+                } else if (root.isKey(ev, "pause")) {
+                    mpv.setProp("pause", !mpv.getProperty("pause"))
                     ev.accepted = true
-                } else if (ev.key === Qt.Key_M) {
-                    mpv.setProperty("mute", !mpv.getProperty("mute"))
+                } else if (root.isKey(ev, "mute")) {
+                    mpv.setProp("mute", !mpv.getProperty("mute"))
                     ev.accepted = true
-                } else if (ev.key === Qt.Key_R) {
+                } else if (root.isKey(ev, "reload")) {
                     root.streamIndex = 0
                     root.startStream()
                     ev.accepted = true
-                } else if (ev.key === Qt.Key_N) {
+                } else if (root.isKey(ev, "nextFeed")) {
                     root.nextMirror()
                     ev.accepted = true
                 } else if (ev.key === Qt.Key_PageUp ||
-                           ev.key === Qt.Key_PageDown) {
-                    const ids = Store.channels
-                    if (ids.length === 0)
-                        return
-                    let cur = -1
-                    for (let i = 0; i < ids.length; i++) {
-                        if (root.currentChannel &&
-                                ids[i].id === root.currentChannel.id) {
-                            cur = i
-                            break
-                        }
-                    }
-                    const step = ev.key === Qt.Key_PageUp ? -1 : 1
-                    const nx = ids[(cur + step + ids.length) % ids.length]
-                    if (nx) {
-                        root.currentChannel = nx
-                        root.streamIndex = 0
-                        root.startStream()
-                    }
+                           ev.key === Qt.Key_PageDown ||
+                           root.isKey(ev, "prevChannel") ||
+                           root.isKey(ev, "nextChannel")) {
+                    const up = ev.key === Qt.Key_PageUp ||
+                               root.isKey(ev, "prevChannel")
+                    root.zapChannel(up ? -1 : 1)
+                    ev.accepted = true
+                } else if (ev.key === Qt.Key_S) {
+                    root.gotoSettings()
                     ev.accepted = true
                 }
                 if (ev.accepted)
@@ -194,7 +239,10 @@ ApplicationWindow {
                 return
             }
             // browse mode
-            if (ev.key === Qt.Key_Slash && !root.searchOpen) {
+            if (ev.key === Qt.Key_S) {
+                root.gotoSettings()
+                ev.accepted = true
+            } else if (ev.key === Qt.Key_Slash && !root.searchOpen) {
                 root.searchOpen = true
                 searchField.forceActiveFocus()
                 ev.accepted = true
@@ -278,16 +326,54 @@ ApplicationWindow {
                                 ev.accepted = true
                             }
                         }
-                        Label {
+                        // mouse: clear without touching the keyboard
+                        MouseArea {
                             visible: searchField.text.length > 0
-                            text: "✕"
-                            color: tk.dim
-                            TapHandler {
-                                onTapped: {
-                                    searchField.text = ""
-                                    Store.search = ""
-                                }
+                            width: 24
+                            height: 24
+                            cursorShape: Qt.PointingHandCursor
+                            Label {
+                                anchors.centerIn: parent
+                                text: "✕"
+                                color: tk.dim
                             }
+                            onClicked: {
+                                searchField.text = ""
+                                Store.search = ""
+                            }
+                        }
+                    }
+                }
+
+                // gear row: mouse (and only mouse; keyboard uses S)
+                ItemDelegate {
+                    id: settingsBtn
+                    Layout.margins: 12
+                    Layout.preferredHeight: 40
+                    Layout.fillWidth: true
+                    focusPolicy: Qt.NoFocus
+                    onClicked: root.gotoSettings()
+                    background: Rectangle {
+                        radius: 8
+                        color: settingsBtn.hovered ? tk.panel2
+                                                   : "transparent"
+                        border.color: settingsBtn.hovered ? tk.accentDim
+                                                          : tk.line
+                        border.width: 1
+                    }
+                    contentItem: RowLayout {
+                        spacing: 10
+                        Label { text: "⚙"; font.pixelSize: 20 }
+                        Label {
+                            text: "Settings"
+                            color: tk.dim
+                            font.pixelSize: 14
+                        }
+                        Item { Layout.fillWidth: true }
+                        Label {
+                            text: "S"
+                            color: tk.dim
+                            font.pixelSize: 12
                         }
                     }
                 }
@@ -436,13 +522,13 @@ ApplicationWindow {
                             font.bold: true
                         }
                         Label {
-                            text: Store.channels.length + " channels"
+                            text: Store.channels.count + " channels"
                             color: tk.dim
                             font.pixelSize: 14
                         }
                         Item { Layout.fillWidth: true }
                         Label {
-                            text: "↵ play   F fav   / search   ESC back"
+                            text: "↵ play   F fav   / search   S settings"
                             color: tk.dim
                             font.pixelSize: 13
                         }
@@ -469,10 +555,14 @@ ApplicationWindow {
                         clip: true
                         cellWidth: tk.cell + 14
                         cellHeight: tk.cellH + 18
-                        model: gridModel
+                        // Lazy C++ slice model: tiles for the visible
+                        // window only (old code appended every filtered
+                        // row into a ListModel on every click/keystroke).
+                        model: Store.channels
                         keyNavigationEnabled: true
                         highlightFollowsCurrentItem: true
                         currentIndex: 0
+                        cacheBuffer: 400
                         ScrollBar.vertical: ScrollBar {}
 
                         function rowsVisible() {
@@ -480,20 +570,26 @@ ApplicationWindow {
                                 grid.width / grid.cellWidth))
                         }
                         Keys.onReturnPressed: (ev) => {
-                            const row = gridModel.get(currentIndex)
-                            if (row)
+                            const row = Store.channels.get(currentIndex)
+                            if (row && row.id)
                                 root.playChannel(row)
                             ev.accepted = true
                         }
                         Keys.onPressed: (ev) => {
-                            if (ev.key === Qt.Key_F) {
-                                const row = gridModel.get(currentIndex)
-                                if (row)
+                            if (Settings.capturing) {
+                                Settings.captureKey(ev.key)
+                                ev.accepted = true
+                            } else if (root.isKey(ev, "favorite")) {
+                                const row = Store.channels.get(currentIndex)
+                                if (row && row.id)
                                     Favs.toggle(row.id)
                                 ev.accepted = true
                             } else if (ev.key === Qt.Key_Slash) {
                                 root.searchOpen = true
                                 searchField.forceActiveFocus()
+                                ev.accepted = true
+                            } else if (ev.key === Qt.Key_S) {
+                                root.gotoSettings()
                                 ev.accepted = true
                             }
                         }
@@ -519,14 +615,16 @@ ApplicationWindow {
                         }
 
                         delegate: ItemDelegate {
+                            id: gridDel
                             width: grid.cellWidth - 14
                             height: grid.cellHeight - 18
                             focus: false
                             highlighted: GridView.isCurrentItem
 
                             background: Rectangle {
+                                id: gridBg
                                 radius: tk.radius
-                                color: tk.panel
+                                color: gridDel.hovered ? tk.panel2 : tk.panel
                                 // couch affordance: current tile always
                                 // marked, brighter when the grid owns focus
                                 border.color: GridView.isCurrentItem
@@ -596,7 +694,7 @@ ApplicationWindow {
                                         }
                                     }
                                     Label {
-                                        visible: Favs.isFav(model.id)
+                                        visible: model.fav
                                         anchors.left: parent.left
                                         anchors.top: parent.top
                                         anchors.margins: 5
@@ -614,9 +712,25 @@ ApplicationWindow {
                                     horizontalAlignment: Text.AlignHCenter
                                 }
                             }
+                            // Left = play, right = favorite toggle (a mouse
+                            // path for the F key). Hover lights the tile.
                             onClicked: {
                                 grid.currentIndex = index
-                                root.playChannel(gridModel.get(index))
+                                root.playChannel(Store.channels.get(index))
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: Favs.toggle(model.id)
+                            }
+                            // star button hint on hover (top-right)
+                            Label {
+                                visible: gridDel.hovered && !model.fav
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: 5
+                                text: "☆"
+                                color: tk.dim
+                                font.pixelSize: 16
                             }
                         }
                         // mpvqt emits ready() only from its GL renderer; in
@@ -633,25 +747,8 @@ ApplicationWindow {
                     }
                 }
 
-                // reactive filtered slice -> grid model
-                ListModel {
-                    id: gridModel
-                    function sync() {
-                        const rows = Store.channels
-                        clear()
-                        for (let i = 0; i < rows.length; i++)
-                            append(rows[i])
-                    }
-                    Component.onCompleted: sync()
-                }
-                Connections {
-                    target: Store
-                    function onChannelsChanged() { gridModel.sync() }
-                }
-                Connections {
-                    target: Favs
-                    function onChanged() { gridModel.sync() }
-                }
+                // (the reactive filtered slice lives in C++: Store.channels,
+                // a lazy QAbstractListModel — no JS re-sync on click/search)
             }
         }
     }
@@ -662,6 +759,33 @@ ApplicationWindow {
         anchors.fill: parent
         visible: root.view === "player"
         color: "#000000"
+
+        // mouse equivalents for the player hotkeys (10-foot UI stays fully
+        // keyboard/gamepad drivable; the mouse is additive, never required)
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+            hoverEnabled: true
+            cursorShape: Qt.BlankCursor
+            onClicked: (mouse) => {
+                if (mouse.button === Qt.LeftButton) {
+                    // click video: play/pause + keep the bar up a moment
+                    mpv.setProp("pause", !mpv.getProperty("pause"))
+                    root.overlayBump()
+                } else if (mouse.button === Qt.RightButton) {
+                    root.stopPlayback() // right-click = ESC back
+                }
+            }
+            onDoubleClicked: (mouse) => {
+                if (mouse.button === Qt.LeftButton)
+                    root.nextMirror() // double-click = N next feed
+            }
+            onWheel: (wheel) => {
+                // wheel = channel zap, matching PgUp/PgDn semantics
+                const step = wheel.angleDelta.y > 0 ? -1 : 1
+                root.zapChannel(step)
+            }
+        }
 
         MpvItem {
             id: mpv
@@ -736,7 +860,7 @@ ApplicationWindow {
                 }
                 Label {
                     visible: root.playState === "error"
-                    text: "N next feed   ·   R retry   ·   ESC back"
+                    text: "N next feed   ·   R retry   ·   ESC / right-click back   ·   dbl-click next feed"
                     color: tk.dim
                     font.pixelSize: 13
                 }
@@ -783,12 +907,261 @@ ApplicationWindow {
                 Label {
                     text: root.currentChannel && root.currentChannel.nUrls > 1
                               ? "N next feed (" + (root.streamIndex + 1) + "/" +
-                                root.currentChannel.nUrls + ")   ESC back"
-                              : "ESC back"
+                                root.currentChannel.nUrls + ")"
+                              : ""
                     color: "#B0C4D4"
                     font.pixelSize: 13
                 }
+                // touch/laptop exit: no keyboard needed. Own MouseArea so
+                // the tap never reaches the video (tap = play/pause).
+                Rectangle {
+                    width: 56
+                    height: 44
+                    radius: 8
+                    color: exitMa.containsMouse ? "#33FFFFFF" : "#22000000"
+                    border.color: "#66FFFFFF"
+                    Label {
+                        anchors.centerIn: parent
+                        // U+00D7: present in every Android font (U+2715
+                        // rendered as a tofu box on the emulator)
+                        text: "×"
+                        color: "#FFFFFF"
+                        font.pixelSize: 24
+                    }
+                    MouseArea {
+                        id: exitMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: (mouse) => {
+                            mouse.accepted = true
+                            root.stopPlayback()
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    // ================= SETTINGS OVERLAY =================
+    // Fully mouse-driveable key-rebind panel (every row is a click target,
+    // Esc/S close). Keyboard only ENTERS capture mode from here.
+    Loader {
+        id: settingsLoader
+        anchors.fill: parent
+        active: root.settingsOpen
+        sourceComponent: settingsComp
+    }
+
+    Component {
+        id: settingsComp
+        Rectangle {
+            objectName: "settingsOverlay"
+            color: "#E6000000"
+            focus: true
+            Keys.onPressed: (ev) => {
+                if (Settings.capturing) {
+                    Settings.captureKey(ev.key)
+                    ev.accepted = true
+                } else if (ev.key === Qt.Key_Escape ||
+                           ev.key === Qt.Key_S) {
+                    root.closeSettings()
+                    ev.accepted = true
+                }
+            }
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: Math.min(720, parent.width - 80)
+                height: Math.min(560, parent.height - 80)
+                radius: tk.radius
+                color: "#121820"
+                border.color: tk.line
+                border.width: 1
+
+                ColumnLayout {
+                    id: settingsCol
+                    anchors.fill: parent
+                    anchors.margins: 24
+                    spacing: 12
+
+                    Item {
+                        Layout.fillWidth: true
+                        height: 40
+                        Label {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "⚙ Settings"
+                            color: tk.text
+                            font.pixelSize: 22
+                            font.bold: true
+                        }
+                        // mouse close button
+                        ItemDelegate {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 44
+                            height: 36
+                            focusPolicy: Qt.NoFocus
+                            onClicked: root.closeSettings()
+                            background: Rectangle {
+                                radius: 8
+                                color: parent.hovered ? tk.panel2
+                                                      : "transparent"
+                                border.color: tk.line
+                            }
+                            contentItem: Label {
+                                anchors.centerIn: parent
+                                text: "✕"
+                                color: tk.dim
+                                font.pixelSize: 18
+                            }
+                        }
+                    }
+
+                    Label {
+                        text: "Keys — click a row, then press the new key. Esc cancels."
+                        color: tk.dim
+                        font.pixelSize: 13
+                    }
+
+                    // key-binding rows
+                    ListView {
+                        id: keyList
+                        objectName: "keyRowList"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 4
+                        keyNavigationEnabled: false
+                        interactive: true
+                        ScrollBar.vertical: ScrollBar {}
+                        model: Settings.actionNames()
+                        delegate: Rectangle {
+                            id: keyRow
+                            width: keyList.width
+                            height: 44
+                            radius: 8
+                            readonly property bool active:
+                                Settings.capturing &&
+                                Settings.capturingAction === modelData
+                            color: rowMa.containsMouse || keyRow.active
+                                       ? tk.panel2 : tk.panel
+                            border.color: keyRow.active ? tk.accent : tk.line
+                            border.width: keyRow.active ? 2 : 1
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 14
+                                anchors.rightMargin: 14
+                                spacing: 10
+                                Label {
+                                    text: actionTitle(modelData)
+                                    color: tk.text
+                                    font.pixelSize: 15
+                                    Layout.fillWidth: true
+                                }
+                                Label {
+                                    id: keyLbl
+                                    text: Settings.keyLabel(modelData)
+                                    color: keyRow.active ? tk.accent
+                                                         : "#9FE8FF"
+                                    font.pixelSize: 14
+                                    font.bold: true
+                                }
+                                Label {
+                                    visible: keyRow.active
+                                    text: "press a key…"
+                                    color: tk.dim
+                                    font.pixelSize: 12
+                                }
+                            }
+                            MouseArea {
+                                id: rowMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (Settings.capturing)
+                                        Settings.cancelCapture()
+                                    Settings.beginCapture(modelData)
+                                    // the next key press lands on keyRoot,
+                                    // whose handler routes it to captureKey
+                                    keyRoot.forceActiveFocus()
+                                }
+                            }
+                            // keyLabel() is an invokable (no auto-rebind):
+                            // refresh imperatively when bindings change
+                            Connections {
+                                target: Settings
+                                function onKeysChanged() {
+                                    keyLbl.text = Settings.keyLabel(modelData)
+                                }
+                            }
+                        }
+                    }
+
+                    // gamepad legend + reset row (mouse: click Reset)
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: gpLegend.implicitHeight + 20
+                        radius: 8
+                        color: tk.panel
+                        border.color: tk.line
+                        ColumnLayout {
+                            id: gpLegend
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            spacing: 2
+                            Label {
+                                text: "Gamepad: " +
+                                      (Settings.gamepadConnected
+                                           ? Settings.gamepadName
+                                           : "not connected")
+                                color: Settings.gamepadConnected
+                                           ? tk.text : tk.dim
+                                font.pixelSize: 13
+                            }
+                            Label {
+                                text: "A play · B back · X fav · Y search · Start pause · Select mute · LB/RB channel · L-stick retry (follows key bindings)"
+                                color: tk.dim
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        Button {
+                            text: "Reset keys"
+                            onClicked: Settings.resetKeys()
+                        }
+                        Item { Layout.fillWidth: true }
+                        Button {
+                            text: "Done"
+                            onClicked: root.closeSettings()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    function actionTitle(action) {
+        switch (action) {
+        case "play": return "Play / activate"
+        case "back": return "Back / close"
+        case "favorite": return "Toggle favorite"
+        case "search": return "Search"
+        case "pause": return "Pause (player)"
+        case "mute": return "Mute (player)"
+        case "reload": return "Retry stream (player)"
+        case "nextFeed": return "Next feed (player)"
+        case "prevChannel": return "Previous channel (player)"
+        case "nextChannel": return "Next channel (player)"
+        default: return action
         }
     }
 

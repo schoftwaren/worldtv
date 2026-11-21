@@ -1,3 +1,4 @@
+#include "appsettings.h"
 #include "channelstore.h"
 #include "favorites.h"
 #include "gamepad.h"
@@ -33,13 +34,13 @@ int runSmoke()
     }
     // filters must produce sane slices
     store.setFilterCountry(QStringLiteral("DE"));
-    std::printf("SMOKE de=%d\n", store.channels().size());
-    if (store.channels().isEmpty()) {
+    std::printf("SMOKE de=%d\n", int(store.channels()->count()));
+    if (store.channels()->count() == 0) {
         std::printf("SMOKE RESULT: FAIL (DE filter empty)\n");
         return 1;
     }
     const QVariantList urls =
-        store.streamUrls(store.channels().first().toMap()
+        store.streamUrls(store.channels()->get(0)
                              .value(QStringLiteral("id"))
                              .toString());
     std::printf("SMOKE first-de-urls=%d\n", urls.size());
@@ -49,8 +50,10 @@ int runSmoke()
     }
     store.setFilterCountry(QString());
     store.setSearch(QStringLiteral("bbc"));
-    std::printf("SMOKE search-bbc=%d\n", store.channels().size());
+    store.flushSearch();
+    std::printf("SMOKE search-bbc=%d\n", int(store.channels()->count()));
     store.setSearch(QString());
+    store.flushSearch();
     std::printf("SMOKE RESULT: OK\n");
     return 0;
 }
@@ -100,6 +103,8 @@ int main(int argc, char *argv[])
     qmlRegisterSingletonInstance("Wtv", 1, 0, "Favs", &Favorites::instance());
     qmlRegisterSingletonInstance("Wtv", 1, 0, "Recent", &Recents::instance());
     qmlRegisterSingletonInstance("Wtv", 1, 0, "Pad", &Gamepad::instance());
+    qmlRegisterSingletonInstance("Wtv", 1, 0, "Settings",
+                                 &AppSettings::instance());
 
     // Parse the embedded/refreshed catalog before the engine loads (the QML
     // side builds its nav model as soon as the store reports loaded).

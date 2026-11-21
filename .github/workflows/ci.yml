@@ -27,7 +27,14 @@ jobs:
 
       - name: Install Qt 6.10.1 (aqtinstall; runner apt Qt is too old)
         run: |
-          pip3 install --break-system-packages aqtinstall
+          # --break-system-packages exists only on pip >= 23 (ubuntu-24.04);
+          # ubuntu-22.04's older pip rejects the flag (exit 2, "no such
+          # option"). Detect instead of assuming.
+          if pip3 install --help | grep -q break-system-packages; then
+            pip3 install --break-system-packages aqtinstall
+          else
+            pip3 install aqtinstall
+          fi
           python3 -m aqt install-qt linux desktop 6.10.1 linux_gcc_64 --outputdir ~/Qt
           # archive layout is .../gcc_64 regardless of the aqt arch name
           QTDIR=$(echo "$HOME"/Qt/6.10.1/*/ | head -1)

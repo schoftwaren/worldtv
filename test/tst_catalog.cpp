@@ -28,6 +28,16 @@ private:
             s.load();
         return s;
     }
+    // ChannelModel is the lazy slice; row maps come through get().
+    static QVariantList rows()
+    {
+        ChannelModel *m = store().channels();
+        QVariantList out;
+        out.reserve(m->count());
+        for (int i = 0; i < m->count(); ++i)
+            out.append(m->get(i));
+        return out;
+    }
 };
 
 void CatalogTest::loadEmbeddedCatalog()
@@ -43,9 +53,10 @@ void CatalogTest::loadEmbeddedCatalog()
              qPrintable(QStringLiteral("countryCount=%1")
                             .arg(s.countryCount())));
     // every channel carries at least one stream url
-    const QVariantList all = s.channels();
-    for (const QVariant &v : all) {
-        const QVariantMap row = v.toMap();
+    ChannelModel *m = s.channels();
+    QCOMPARE(m->count(), s.channelCount());
+    for (int i = 0; i < m->count(); ++i) {
+        const QVariantMap row = m->get(i);
         if (row.value("nUrls"_L1).toInt() < 1) {
             QFAIL(qPrintable(QStringLiteral("channel without urls: %1")
                                  .arg(row.value("name"_L1).toString())));
@@ -58,7 +69,7 @@ void CatalogTest::countryAndCategoryFilters()
 {
     auto &s = store();
     s.setFilterCountry(QStringLiteral("DE"));
-    const QVariantList de = s.channels();
+    const QVariantList de = rows();
     QVERIFY(!de.isEmpty());
     for (const QVariant &v : de)
         QCOMPARE(v.toMap().value("cc"_L1).toString(), QStringLiteral("DE"));
@@ -74,7 +85,7 @@ void CatalogTest::countryAndCategoryFilters()
     const QString cat = cats.first().toMap().value("id"_L1).toString();
     s.setFilterCountry(QString());
     s.setFilterCategory(cat);
-    const QVariantList slice = s.channels();
+    const QVariantList slice = rows();
     QVERIFY(!slice.isEmpty());
     for (const QVariant &v : slice)
         QVERIFY(v.toMap().value("cats"_L1).toStringList().contains(cat));
@@ -85,7 +96,8 @@ void CatalogTest::searchFilter()
 {
     auto &s = store();
     s.setSearch(QStringLiteral("bbc"));
-    const QVariantList hits = s.channels();
+    s.flushSearch();
+    const QVariantList hits = rows();
     QVERIFY(!hits.isEmpty());
     for (const QVariant &v : hits)
         QVERIFY2(v.toMap().value("name"_L1)
@@ -93,8 +105,10 @@ void CatalogTest::searchFilter()
                      .contains("bbc", Qt::CaseInsensitive),
                  qPrintable(v.toMap().value("name"_L1).toString()));
     s.setSearch(QStringLiteral("zzzzqqqq_no_match"));
-    QCOMPARE(s.channels().size(), 0);
+    s.flushSearch();
+    QCOMPARE(s.channels()->count(), 0);
     s.setSearch(QString());
+    s.flushSearch();
 }
 
 void CatalogTest::streamUrlFallbacks()
@@ -102,10 +116,10 @@ void CatalogTest::streamUrlFallbacks()
     auto &s = store();
     // find a channel with >1 url and verify order + shape
     QString multi;
-    const QVariantList all = s.channels();
-    for (const QVariant &v : all) {
-        if (v.toMap().value("nUrls"_L1).toInt() > 1) {
-            multi = v.toMap().value("id"_L1).toString();
+    ChannelModel *m = s.channels();
+    for (int i = 0; i < m->count(); ++i) {
+        if (m->get(i).value("nUrls"_L1).toInt() > 1) {
+            multi = m->get(i).value("id"_L1).toString();
             break;
         }
     }

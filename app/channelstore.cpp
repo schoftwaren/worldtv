@@ -9,6 +9,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QStandardPaths>
+#include <QTimer>
 
 #include <algorithm>
 #include <set>
@@ -211,12 +212,23 @@ ChannelStore &ChannelStore::instance()
 }
 
 ChannelStore::ChannelStore(QObject *parent) : QObject(parent)
+    , m_model(new ChannelModel(this, this))
 {
+    // Search-as-you-type re-filters the whole catalog per keystroke; a
+    // 120ms debounce keeps the grid fluid on huge slices without making
+    // the field feel laggy. Country/category/fav clicks stay instant.
+    m_searchTimer = new QTimer(this);
+    m_searchTimer->setSingleShot(true);
+    m_searchTimer->setInterval(120);
+    connect(m_searchTimer, &QTimer::timeout, this,
+            &ChannelStore::rebuildFiltered);
     // An unfavorite while the "Favorites" filter is active must drop the
     // row from the visible slice — re-filter on favorites changes.
     connect(&Favorites::instance(), &Favorites::changed, this, [this] {
         if (m_fFav)
             rebuildFiltered();
+        else
+            m_model->refreshFavorites();
     });
 }
 
@@ -337,13 +349,20 @@ int ChannelStore::qualityRank(const QString &q)
 
 void ChannelStore::rebuildFiltered()
 {
-    // Search tokens, case-insensitive substring on the preallocated slice.
+    // Search tokens, case-insensitive substring. The slice stores INDEXES
+    // into m_chans (not QVariantMap rows) — the QML model builds row maps
+    // lazily in ChannelModel::data() for visible tiles only, so switching
+    // to a 1600-channel country costs an index pass, not 1600 map builds.
+    if (m_searchTimer && m_searchTimer->isActive())
+        m_searchTimer->stop();
+
     const QString needle = m_search.trimmed();
     const auto tokens = needle.split(QLatin1Char(' '), Qt::SkipEmptyParts);
 
-    m_filtered.clear();
-    m_filtered.reserve(m_chans.size());
-    for (const auto &ch : m_chans) {
+    QVector<int> slice;
+    slice.reserve(m_chans.size());
+    for (int i = 0; i < m_chans.size(); ++i) {
+        const Chan &ch = m_chans.at(i);
         if (!m_fCountry.isEmpty() && ch.cc != m_fCountry)
             continue;
         if (!m_fCategory.isEmpty() && !ch.cats.contains(m_fCategory))
@@ -361,9 +380,26 @@ void ChannelStore::rebuildFiltered()
             if (!all)
                 continue;
         }
-        m_filtered.append(chanRow(ch));
+        slice.append(i);
     }
+    m_model->replaceSlice(slice);
     emit channelsChanged();
+}
+
+void ChannelStore::refreshFavMask()
+{
+    m_favMask.resize(m_filtered.size());
+    for (int i = 0; i < m_filtered.size(); ++i) {
+        const Chan &ch = m_chans.at(m_filtered.at(i));
+        m_favMask[i] = Favorites::instance().contains(ch.id);
+    }
+}
+
+void ChannelStore::flushSearch()
+{
+    if (m_searchTimer && m_searchTimer->isActive())
+        m_searchTimer->stop();
+    rebuildFiltered();
 }
 
 QVariantMap ChannelStore::chanRow(const Chan &c) const
@@ -436,7 +472,11 @@ void ChannelStore::setSearch(const QString &s)
         return;
     m_search = s;
     emit filterChanged();
-    rebuildFiltered();
+    // Debounced: typing "bbc" re-filters once after the last keystroke,
+    // not three times mid-word. The timer stops itself inside
+    // rebuildFiltered() so immediate callers stay synchronous.
+    if (m_searchTimer)
+        m_searchTimer->start();
 }
 
 QVariantList ChannelStore::streamUrls(const QString &id) const
@@ -464,6 +504,13 @@ QVariantMap ChannelStore::channelById(const QString &id) const
     if (it == m_idxById.constEnd())
         return {};
     return chanRow(m_chans.at(it.value()));
+}
+
+QVariantMap ChannelStore::channelAt(int sliceRow) const
+{
+    if (sliceRow < 0 || sliceRow >= m_filtered.size())
+        return {};
+    return chanRow(m_chans.at(m_filtered.at(sliceRow)));
 }
 
 void ChannelStore::refresh()
@@ -540,4 +587,104 @@ void ChannelStore::refresh()
             emit refreshingChanged();
         });
     });
+}
+
+// ---------------- ChannelModel (lazy slice -> QML) ----------------
+
+ChannelModel::ChannelModel(ChannelStore *store, QObject *parent)
+    : QAbstractListModel(parent), m_store(store)
+{
+}
+
+int ChannelModel::rowCount(const QModelIndex &parent) const
+{
+    return parent.isValid() ? 0 : int(m_store->m_filtered.size());
+}
+
+QHash<int, QByteArray> ChannelModel::roleNames() const
+{
+    static const QHash<int, QByteArray> roles = {
+        {IdRole, "id"},
+        {NameRole, "name"},
+        {CcRole, "cc"},
+        {LogoRole, "logo"},
+        {CatsRole, "cats"},
+        {NUrlsRole, "nUrls"},
+        {QualityRole, "quality"},
+        {FavRole, "fav"},
+        {CountryNameRole, "countryName"},
+        {FlagRole, "flag"},
+    };
+    return roles;
+}
+
+QVariant ChannelModel::data(const QModelIndex &index, int role) const
+{
+    const int r = index.row();
+    if (r < 0 || r >= m_store->m_filtered.size())
+        return {};
+    const ChannelStore::Chan &ch =
+        m_store->m_chans.at(m_store->m_filtered.at(r));
+    switch (role) {
+    case IdRole:
+        return ch.id;
+    case NameRole:
+        return ch.name;
+    case CcRole:
+        return ch.cc;
+    case LogoRole:
+        return ch.logo;
+    case CatsRole:
+        return ch.cats;
+    case NUrlsRole:
+        return ch.nUrls;
+    case QualityRole: {
+        // best quality label for the tile badge
+        QString bestQ;
+        for (int i = ch.first; i < ch.first + ch.nUrls; ++i) {
+            const QString &q = m_store->m_urls.at(i).q;
+            if (ChannelStore::qualityRank(q) > ChannelStore::qualityRank(bestQ))
+                bestQ = q;
+        }
+        return bestQ;
+    }
+    case FavRole:
+        return m_store->m_favMask.at(r);
+    case CountryNameRole: {
+        const auto meta = m_store->m_countryMeta.constFind(ch.cc);
+        return meta != m_store->m_countryMeta.constEnd() ? meta->first
+                                                         : ch.cc;
+    }
+    case FlagRole: {
+        const auto meta = m_store->m_countryMeta.constFind(ch.cc);
+        return meta != m_store->m_countryMeta.constEnd()
+                   ? meta->second
+                   : QString(QChar(0x1F310));
+    }
+    default:
+        return {};
+    }
+}
+
+QVariantMap ChannelModel::get(int row) const
+{
+    return m_store->channelAt(row);
+}
+
+void ChannelModel::refreshFavorites()
+{
+    if (m_store->m_filtered.isEmpty())
+        return;
+    m_store->refreshFavMask();
+    const int n = int(m_store->m_filtered.size());
+    emit dataChanged(index(0), index(n - 1), {FavRole});
+}
+
+void ChannelModel::replaceSlice(QVector<int> slice)
+{
+    beginResetModel();
+    m_store->m_filtered = slice;
+    m_store->refreshFavMask();
+    endResetModel();
+    emit countChanged();
 }
