@@ -38,6 +38,13 @@ if(NOT ANDROID AND NOT WORLDTV_MPV_NO_PKGCONFIG AND PkgConfig_FOUND)
 endif()
 if(TARGET PkgConfig::LIBMPV)
     target_link_libraries(mpvqt_vendor PUBLIC PkgConfig::LIBMPV)
+    # PHYSICAL LINK CHECK (linuxdeploy-era law): pkg-config can report the
+    # module "found" while its Requires: chain is incomplete (macOS CI
+    # v1.1.0: libarchive.pc missing -> EMPTY include dirs -> mpv/client.h
+    # not found at build). Assert the header is actually reachable.
+    if(NOT EXISTS "${LIBMPV_INCLUDEDIR}/mpv/client.h")
+        message(FATAL_ERROR "PkgConfig::LIBMPV has no usable include dir (${LIBMPV_INCLUDEDIR}) - mpv/client.h missing. Fix pkg-config metadata (e.g. brew install libarchive).")
+    endif()
 else()
     if(ANDROID)
         if(NOT MPV_LIBRARY)

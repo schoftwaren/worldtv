@@ -2,7 +2,11 @@
 
 #include <QHash>
 #include <QObject>
+#include <QSettings>
 #include <QString>
+#include <QStringList>
+#include <QVariant>
+#include <QVariantList>
 
 // App settings + user-rebindable keys, persisted via QSettings
 // (AppDataLocation/worldtv.conf). The UI (Main.qml settings overlay) binds
